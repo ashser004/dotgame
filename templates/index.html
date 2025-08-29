@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>5x5 Dot Connector</title>
+<style>
+  body {
+    display: flex; flex-direction: column; justify-content: center; align-items: center;
+    height: 100vh; margin: 0; background: gray; font-family: Arial, sans-serif;
+  }
+  .game-info { display: flex; justify-content: space-between; width: 500px; margin-bottom: 10px; }
+  canvas { background: white; border: 2px solid #333; touch-action: none; }
+</style>
+</head>
+<body>
+  <div class="game-info">
+    <h2 id="scoreHeader">Your Score: 0</h2>
+    <h2 id="turnHeader"></h2>
+  </div>
+  <h2 id="playerNumber"></h2>
+  <canvas id="gameCanvas" width="600" height="600"></canvas>
+
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script>
+    // ----- Session + Socket -----
+    let sessionId = localStorage.getItem('sessionId');
+    if (!sessionId) {
+      sessionId = Math.random().toString(36).slice(2);
+      localStorage.setItem('sessionId', sessionId);
+    }
+    const socket = io({ query: { sessionId } });
+
+    // ----- Canvas + Layout -----
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    const playerNumberHeader = document.getElementById("playerNumber");
+    const turnHeader = document.getElementById("turnHeader");
+    const scoreHeader = document.getElementById("scoreHeader");
+
+    // ----- Game config -----
+    const rows = 5, cols = 5;           // dots grid
+    const dotRadius = 10;
+    const hoverRadius = 25;
+    const margin = 60;
+    const spacing = (canvas.width - 2 * margin) / (cols - 1);
+
+    // ----- State -----
+    let myPlayerNumber = null;
+    let currentTurnNumber = 1;
+
+    // Lines and squares are stored as row/col on the client.
+    // lines: [{start:{row,col}, end:{row,col}}]
+    // squares: 4x4, value = playerNumber (0 if empty)
+    let lines = [];
+    let squares = Array(rows - 1).fill().map(() => Array(cols - 1).fill(0));
+    let scores = {};
+
+    // Precompute dot positions
+    const dots = [];
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        dots.push({ x: margin + c * spacing, y: margin + r * spacing, row: r, col: c });
+      }
+    }
+
+    // Helpers: coords <-> row/col
+    function rcToXY(rc) {
+      return {
+        x: margin + rc.col * spacing,
+        y: margin + rc.row * spacing
+      };
+    }
+
+    // ----- Drawing -----
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Draw lines
+      ctx.strokeStyle = "blue";
+      ctx.lineWidth = 4;
+      for (const line of lines) {
+        const a = rcToXY(line.start);
+        const b = rcToXY(line.end);
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
+
+      // Draw dots (hover handled separately)
+      for (const dot of dots) {
+        ctx.beginPath();
+        ctx.arc(dot.x, dot.y, dotRadius, 0, Math.PI * 2);
+        ctx.fillStyle = (hoverDot && hoverDot.row === dot.row && hoverDot.col === dot.col) ? "orange" : "black";
+        ctx.fill();
+      }
+
+      // Draw square owner numbers
+      ctx.fillStyle = "red";
+      ctx.font = "bold 24px Arial";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      for (let r = 0; r < squares.length; r++) {
+        for (let c = 0; c < squares[r].length; c++) {
+          if (squares[r][c] !== 0) {
+            const x = margin + c * spacing + spacing / 2;
+            const y = margin + r * spacing + spacing / 2;
+            ctx.fillText(squares[r][c], x, y);
+          }
+        }
+      }
+    }
+
+    // ----- Input helpers -----
+    function getDotAtPosition(x, y) {
+      return dots.find(dot => Math.hypot(dot.x - x, dot.y - y) <= hoverRadius);
+    }
+    function isAdjacent(d1, d2) {
+      if (!d1 || !d2) return false;
+      return Math.abs(d1.row - d2.row) + Math.abs(d1.col - d2.col) === 1;
+    }
+
+    // ----- Interaction -----
+    let hoverDot = null;
+    let startDot = null;
+    let isDrawing = false;
+
+    function startLine(dot) {
+      if (myPlayerNumber === currentTurnNumber) {
+        startDot = dot;
+        isDrawing = true;
+      }
+    }
+    function endLine(dot) {
+      if (myPlayerNumber === currentTurnNumber && isDrawing && startDot && dot && isAdjacent(startDot, dot)) {
+        // Send only row/col to server (server validates + normalizes)
+        socket.emit('new_line', {
+          start: { row: startDot.row, col: startDot.col },
+          end: { row: dot.row, col: dot.col },
+          playerNumber: myPlayerNumber
+        });
+      }
+      isDrawing = false;
+      startDot = null;
+    }
+    function handleMove(x, y) { hoverDot = getDotAtPosition(x, y); }
+
+    // Mouse
+    ["mousedown", "mouseup", "mousemove"].forEach(e => {
+      canvas.addEventListener(e, ev => {
+        const rect = canvas.getBoundingClientRect();
+        const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
+        if (e === "mousedown") startLine(getDotAtPosition(x, y));
+        if (e === "mouseup") endLine(getDotAtPosition(x, y));
+        if (e === "mousemove") handleMove(x, y);
+      });
+    });
+    // Touch
+    ["touchstart", "touchend", "touchmove"].forEach(e => {
+      canvas.addEventListener(e, ev => {
+        ev.preventDefault();
+        const rect = canvas.getBoundingClientRect();
+        const t = ev.touches[0] || ev.changedTouches[0];
+        const x = t.clientX - rect.left, y = t.clientY - rect.top;
+        if (e === "touchstart") startLine(getDotAtPosition(x, y));
+        if (e === "touchend") endLine(getDotAtPosition(x, y));
+        if (e === "touchmove") handleMove(x, y);
+      }, { passive: false });
+    });
+
+    // ----- Socket events -----
+    function applyState(data) {
+      lines = data.lines || [];
+      squares = data.squares || squares;
+      scores = data.scores || {};
+      currentTurnNumber = data.turn || 1;
+
+      turnHeader.textContent = (myPlayerNumber === currentTurnNumber)
+        ? "Your Turn!"
+        : `Player ${currentTurnNumber}'s Turn`;
+
+      const myScore = scores[myPlayerNumber] ?? 0;
+      scoreHeader.textContent = `Your Score: ${myScore}`;
+
+      // Force immediate redraw to avoid timing/race issues
+      draw();
+    }
+
+    socket.on('set_player_number', data => {
+      myPlayerNumber = data.playerNumber;
+      playerNumberHeader.textContent = `You are Player ${myPlayerNumber}`;
+    });
+
+    socket.on('load_state', applyState);
+    socket.on('update_state', applyState);
+
+    socket.on('game_full', data => alert(data.message));
+
+    socket.emit('request_state');
+
+    // Animation loop (kept for hover responsiveness)
+    function gameLoop() {
+      // draw() is also called on updates; this loop keeps hover smooth
+      draw();
+      requestAnimationFrame(gameLoop);
+    }
+    gameLoop();
+  </script>
+</body>
+</html>
