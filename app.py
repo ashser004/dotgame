@@ -22,6 +22,8 @@ scores = defaultdict(int)
 squares = [[0 for _ in range(SQR_COLS)] for _ in range(SQR_ROWS)]  # owner player number, 0 if empty
 
 
+#---age free game--
+
 # ----- Helpers -----
 def norm_edge(a, b):
     """Normalize an edge between two (row,col) to a canonical ordering."""
